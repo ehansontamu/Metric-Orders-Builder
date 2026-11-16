@@ -1,0 +1,64 @@
+name: Sync MetricOrders
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Sync mode (rebuild deletes items newer than the cutoff)
+        type: choice
+        options:
+          - upsert
+          - rebuild
+        default: upsert
+      dry_run:
+        description: Validate and report without writing to SharePoint
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# One writer across manual sync and recovery runs.
+concurrency:
+  group: metric-orders-sharepoint
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run offline tests
+        run: python -B -m unittest discover -s tests -v
+      - name: Synchronize orders
+        env:
+          BIGCOMMERCE_STORE_URL: ${{ vars.BIGCOMMERCE_STORE_URL }}
+          BIGCOMMERCE_API_TOKEN: ${{ secrets.BIGCOMMERCE_API_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          SHAREPOINT_SITE_URL: ${{ vars.SHAREPOINT_SITE_URL || 'https://tamucs.sharepoint.com/teams/Team-TechHub' }}
+          SHAREPOINT_LIST_ID: ${{ vars.SHAREPOINT_LIST_ID || '81de6f0c-29f3-4b76-ae63-2ad8546b7748' }}
+          SHAREPOINT_LIST_NAME: ${{ vars.SHAREPOINT_LIST_NAME || 'MetricOrders' }}
+          ORDERDATE_CUTOFF: ${{ vars.ORDERDATE_CUTOFF || '2025-12-31' }}
+          SYNC_MODE: ${{ inputs.mode || 'upsert' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        shell: bash
+        run: |
+          args=(--mode "$SYNC_MODE" --summary-json reports/sync-summary.json)
+          if [[ "$DRY_RUN" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          python -B -m metric_orders "${args[@]}"
+      - name: Save summary report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metric-orders-summary
+          path: reports/sync-summary.json
+          if-no-files-found: warn
+          retention-days: 30
